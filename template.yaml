@@ -1,0 +1,235 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  S3BucketName:
+    Type: String
+  AuthorizerName:
+    Type: String
+    Default: bot41-auth-api-dev-authorizer
+  AppUrl:
+    Type: String
+    Default: http://localhost:3000
+  ImageSizes:
+    Type: String
+    Default: "10x10,15x15,20x20,50x50,75x75,100x100,150x150"
+  ImageQuality:
+    Type: String
+    Default: "10,50,100"
+  ImageFits:
+    Type: String
+    Default: "contain"
+  Environment:
+    Description: Environment type.
+    Default: development
+    Type: String
+    AllowedValues:
+      - production
+      - development
+    ConstraintDescription: Must specify production or development
+  UploadsApiDomainName:
+    Type: String
+    Default: "not needed in development"
+  UploadsApiCertificateArn:
+    Type: String
+    Default: "not needed in development"
+
+Conditions:
+  CreateProdResources: !Equals 
+    - !Ref Environment
+    - production
+
+Globals:
+  Function:
+    Runtime: nodejs18.x
+    MemorySize: 10240
+  
+Resources:
+
+  SharpLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: SharpLayer
+      ContentUri: ./sharp-layer.zip
+      CompatibleRuntimes:
+        - nodejs18.x
+
+  UploadsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Auth:
+        DefaultAuthorizer: ImportedAuthorizer
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          ImportedAuthorizer:
+            FunctionArn: 
+              Fn::ImportValue: 
+                !Sub "${AuthorizerName}"
+      Cors:
+        AllowMethods: "'POST, GET, OPTIONS, DELETE, PUT, PATCH'"
+        AllowOrigin: !Sub
+          - "'${AppUrl}'"
+          - AppUrl: !Ref AppUrl
+        AllowHeaders: "'Origin, X-Requested-With, Content-Type, Accept, Authorization'"
+
+  CustomDomainUploads:
+    Type: AWS::ApiGateway::DomainName
+    Condition: CreateProdResources
+    Properties:
+      DomainName: !Ref UploadsApiDomainName
+      EndpointConfiguration:
+        Types:
+          - EDGE
+      CertificateArn: !Ref UploadsApiCertificateArn
+      SecurityPolicy: TLS_1_2
+
+  CustomDomainUploadsMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Condition: CreateProdResources
+    Properties:
+      DomainName: !Ref UploadsApiDomainName
+      RestApiId: !Ref UploadsApi
+      Stage: !Ref UploadsApi.Stage
+    DependsOn:
+      - CustomDomainUploads
+
+  UploadsPost:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/uploads-post
+      Handler: index.handler
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref S3BucketName
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /
+            Method: post
+            RestApiId: !Ref UploadsApi
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref S3BucketName
+
+  ImageProcessing:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: dist/image-processing
+      Handler: index.handler
+      Timeout: 300
+      Layers:
+        - !Ref SharpLayer
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref S3BucketName
+          IMAGE_SIZES: !Ref ImageSizes
+          IMAGE_QUALITY: !Ref ImageQuality
+          IMAGE_FITS: !Ref ImageFits
+      Events:
+        S3Event:
+          Type: S3
+          Properties:
+            Bucket:
+              Ref: S3Bucket
+            Events:
+              - 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                - Name: suffix
+                  Value: original
+      Policies:
+        - S3CrudPolicy:
+            BucketName: !Ref S3BucketName
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref S3BucketName
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods:
+              - "GET"
+              - "PUT"
+              - "POST"
+            AllowedOrigins:
+              - !Ref AppUrl
+            AllowedHeaders:
+              - "*"
+
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3Bucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource: !Sub "arn:aws:s3:::${S3BucketName}/*"
+            Principal:
+              Service: "cloudfront.amazonaws.com"
+            Condition:
+              StringEquals:
+                "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${StaticDistribution}"
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "CloudfrontS3AccessBot41Static${Environment}"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  StaticResponseHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "CacheForever${Environment}"
+        CustomHeadersConfig:
+          Items:
+            - Header: Cache-control
+              Override: true
+              Value: "max-age=63072000"
+
+  StaticDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt S3Bucket.DomainName
+            Id: S3Origin
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        Enabled: true
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          DefaultTTL: 5184000 # 60 days
+          MaxTTL: 5184000
+          MinTTL: 5184000
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          TargetOriginId: S3Origin
+          ForwardedValues:
+            QueryString: 'false'
+            Cookies:
+              Forward: none
+          ResponseHeadersPolicyId: !Ref StaticResponseHeaders
+        ViewerCertificate:
+          CloudFrontDefaultCertificate: 'true'
+
+Outputs:
+  UploadsApi:
+    Description: "API Gateway endpoint URL for Prod stage for UploadsApi"
+    Value: !Sub "https://${UploadsApi}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+  StaticDistribution:
+    Description: "CloudFront distribution domain name"
+    Value: !GetAtt StaticDistribution.DomainName
