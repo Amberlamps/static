@@ -8,6 +8,11 @@ if (!bucketName) {
     throw new Error("Bucket name not set");
 }
 
+const appUrl = process.env["APP_URL"];
+if (!appUrl) {
+    throw new Error("App url not set");
+}
+
 // Aws api gateway handler
 export const handler =
     async () // eslint-disable-next-line @typescript-eslint/require-await
@@ -26,5 +31,14 @@ export const handler =
                 url,
                 uploadId,
             }),
+
+            headers: {
+                "Access-Control-Allow-Credentials": true,
+                "Access-Control-Allow-Methods":
+                    "POST, GET, OPTIONS, DELETE, PUT, PATCH",
+                "Access-Control-Allow-Origin": appUrl,
+                "Access-Control-Allow-Headers":
+                    "Origin, X-Requested-With, Content-Type, Accept",
+            },
         };
     };

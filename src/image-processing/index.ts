@@ -6,12 +6,12 @@ import { Upload } from "@aws-sdk/lib-storage";
 
 const bucketName = process.env["BUCKET_NAME"];
 if (!bucketName) {
-    throw new Error("Bucket name not set");
+    throw new Error("Bucket name not set!");
 }
 
 const sizes = process.env["IMAGE_SIZES"];
 if (!sizes) {
-    throw new Error("Sizes not set");
+    throw new Error("Sizes not set!");
 }
 
 const fits = process.env["IMAGE_FITS"] || "contain";

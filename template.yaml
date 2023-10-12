@@ -102,6 +102,7 @@ Resources:
       Environment:
         Variables:
           BUCKET_NAME: !Ref S3BucketName
+          APP_URL: !Ref AppUrl
       Events:
         ApiEvent:
           Type: Api
